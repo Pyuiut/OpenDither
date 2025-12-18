@@ -92,20 +92,6 @@ class MainWindow(QMainWindow):
             "flare_color_hue": 40, "flare_color_sat": 80, "flare_color_value": 90,
             "flare_spacing": 40,
             "glitch_intensity": 0, "glitch_frequency": 40, "glitch_shift": 40,
-            # Epsilon Glow (Dither Boy style)
-            "epsilon_glow_enabled": 0,
-            "epsilon_threshold": 25, "epsilon_smoothing": 25,
-            "epsilon_radius": 25, "epsilon_intensity": 500,
-            "epsilon_aspect": 100, "epsilon_direction": 0,
-            "epsilon_falloff": 10, "epsilon_value": 50,
-            "epsilon_distance_scale": 150,
-            # JPEG Glitch Effects
-            "block_shift": 0, "channel_swap": 0,
-            "scanline_offset": 0, "block_scramble": 0,
-            "interlace_corruption": 0,
-            # Chromatic Aberration
-            "chromatic_enabled": 0, "chromatic_max_displace": 20,
-            "chromatic_red": 50, "chromatic_green": 50, "chromatic_blue": 50,
             # Export
             "export_quality": 95, "export_dpi": 300,
             "export_width": 1920, "export_height": 1080,
@@ -962,83 +948,6 @@ class MainWindow(QMainWindow):
         
         layout.addWidget(glitch_card)
         
-        # Epsilon Glow (Dither Boy style)
-        epsilon_card = self._create_card()
-        epsilon_layout = QVBoxLayout(epsilon_card)
-        epsilon_layout.setContentsMargins(0, 0, 0, 0)
-        epsilon_layout.setSpacing(8)
-        
-        epsilon_title = QLabel("Epsilon Glow")
-        epsilon_title.setObjectName("cardTitle")
-        epsilon_layout.addWidget(epsilon_title)
-        
-        epsilon_enable_row = QHBoxLayout()
-        epsilon_enable_label = QLabel("Enable")
-        epsilon_enable_row.addWidget(epsilon_enable_label)
-        epsilon_enable_row.addStretch()
-        self.epsilon_glow_cb = QCheckBox()
-        self.epsilon_glow_cb.setChecked(bool(self.parameters.get("epsilon_glow_enabled", 0)))
-        self.epsilon_glow_cb.stateChanged.connect(lambda v: self._on_checkbox_changed("epsilon_glow_enabled", v))
-        epsilon_enable_row.addWidget(self.epsilon_glow_cb)
-        epsilon_layout.addLayout(epsilon_enable_row)
-        
-        epsilon_layout.addLayout(self._create_slider("Threshold", "epsilon_threshold", 0, 100, 25))
-        epsilon_layout.addLayout(self._create_slider("Smoothing", "epsilon_smoothing", 0, 100, 25))
-        epsilon_layout.addLayout(self._create_slider("Radius", "epsilon_radius", 1, 100, 25))
-        epsilon_layout.addLayout(self._create_slider("Intensity", "epsilon_intensity", 0, 1000, 500))
-        epsilon_layout.addLayout(self._create_slider("Aspect Ratio", "epsilon_aspect", 1, 200, 100))
-        epsilon_layout.addLayout(self._create_slider("Direction (°)", "epsilon_direction", 0, 360, 0))
-        epsilon_layout.addLayout(self._create_slider("Falloff", "epsilon_falloff", 1, 50, 10))
-        epsilon_layout.addLayout(self._create_slider("Epsilon", "epsilon_value", 1, 255, 50))
-        epsilon_layout.addLayout(self._create_slider("Distance Scale", "epsilon_distance_scale", 1, 500, 150))
-        
-        layout.addWidget(epsilon_card)
-        
-        # JPEG Glitch Effects
-        jpeg_card = self._create_card()
-        jpeg_layout = QVBoxLayout(jpeg_card)
-        jpeg_layout.setContentsMargins(0, 0, 0, 0)
-        jpeg_layout.setSpacing(8)
-        
-        jpeg_title = QLabel("JPEG Glitch Effects")
-        jpeg_title.setObjectName("cardTitle")
-        jpeg_layout.addWidget(jpeg_title)
-        
-        jpeg_layout.addLayout(self._create_slider("Block Shift", "block_shift", 0, 100, 0))
-        jpeg_layout.addLayout(self._create_slider("Channel Swap", "channel_swap", 0, 100, 0))
-        jpeg_layout.addLayout(self._create_slider("Scanline Offset", "scanline_offset", 0, 100, 0))
-        jpeg_layout.addLayout(self._create_slider("Block Scramble", "block_scramble", 0, 100, 0))
-        jpeg_layout.addLayout(self._create_slider("Interlace Corruption", "interlace_corruption", 0, 100, 0))
-        
-        layout.addWidget(jpeg_card)
-        
-        # Chromatic Aberration
-        chroma_card = self._create_card()
-        chroma_layout = QVBoxLayout(chroma_card)
-        chroma_layout.setContentsMargins(0, 0, 0, 0)
-        chroma_layout.setSpacing(8)
-        
-        chroma_title = QLabel("Chromatic Aberration")
-        chroma_title.setObjectName("cardTitle")
-        chroma_layout.addWidget(chroma_title)
-        
-        chroma_enable_row = QHBoxLayout()
-        chroma_enable_label = QLabel("Enable")
-        chroma_enable_row.addWidget(chroma_enable_label)
-        chroma_enable_row.addStretch()
-        self.chromatic_cb = QCheckBox()
-        self.chromatic_cb.setChecked(bool(self.parameters.get("chromatic_enabled", 0)))
-        self.chromatic_cb.stateChanged.connect(lambda v: self._on_checkbox_changed("chromatic_enabled", v))
-        chroma_enable_row.addWidget(self.chromatic_cb)
-        chroma_layout.addLayout(chroma_enable_row)
-        
-        chroma_layout.addLayout(self._create_slider("Max Displace", "chromatic_max_displace", 0, 100, 20))
-        chroma_layout.addLayout(self._create_slider("Red Channel", "chromatic_red", 0, 100, 50))
-        chroma_layout.addLayout(self._create_slider("Green Channel", "chromatic_green", 0, 100, 50))
-        chroma_layout.addLayout(self._create_slider("Blue Channel", "chromatic_blue", 0, 100, 50))
-        
-        layout.addWidget(chroma_card)
-        
         # Film effects
         film_card = self._create_card()
         film_layout = QVBoxLayout(film_card)
@@ -1469,11 +1378,6 @@ class MainWindow(QMainWindow):
     def _on_invert_changed(self, state: int) -> None:
         """Handle invert toggle."""
         self.parameters["invert"] = int(bool(state))
-        self._schedule_update()
-
-    def _on_checkbox_changed(self, key: str, state: int) -> None:
-        """Handle generic checkbox toggle."""
-        self.parameters[key] = int(bool(state))
         self._schedule_update()
     
     def _on_preserve_colors_changed(self, state: int) -> None:

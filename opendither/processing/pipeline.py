@@ -138,134 +138,141 @@ class ProcessingPipeline:
         return restored
     
     def _apply_flares(self, image: NDArray, params: Dict) -> NDArray:
-        """Add customizable lens flare overlays with ghosts, shapes, and tint."""
+        """Add realistic lens flares with star patterns at bright light sources."""
         intensity = params.get("flare_intensity", 0) / 100.0
         if intensity <= 0:
             return image
         
         threshold = params.get("flare_threshold", 60)
         style = params.get("flare_style", "Lens")
-        distribution = params.get("flare_distribution", "Highlights")
         shape = params.get("flare_shape", "Star")
-        tint_name = params.get("flare_tint", "Warm")
-        flare_amount = params.get("flare_amount", 0)
-        variation = params.get("flare_variation", 50) / 100.0
-        base_size = max(6, int(params.get("flare_size", 40)))
-        flare_spacing = params.get("flare_spacing", 40) / 100.0
+        flare_amount = max(1, int(params.get("flare_amount", 0) / 10) + 1)
+        base_size = max(10, int(params.get("flare_size", 40)))
         hue = params.get("flare_color_hue", 40) / 360.0
         sat = params.get("flare_color_sat", 80) / 100.0
         val = params.get("flare_color_value", 90) / 100.0
         
-        # Legacy tint presets can coexist with HSV sliders – prefer explicit HSV.
-        tint_colors = {
-            "Warm": np.array([255, 196, 150], dtype=np.float32),
-            "Cool": np.array([150, 210, 255], dtype=np.float32),
-            "Neon": np.array([190, 255, 220], dtype=np.float32),
-            "Gold": np.array([255, 223, 140], dtype=np.float32),
-            "Sunset": np.array([255, 160, 190], dtype=np.float32),
-        }
-        preset_tint = tint_colors.get(tint_name, tint_colors["Warm"])
-        hsv_rgb = colorsys.hsv_to_rgb(
-            np.clip(hue, 0, 1),
-            np.clip(sat, 0, 1),
-            np.clip(val, 0, 1),
-        )
-        hsv_tint = np.array([c * 255 for c in hsv_rgb], dtype=np.float32)
-        tint = (preset_tint * 0.4 + hsv_tint * 0.6)
+        h, w = image.shape[:2]
+        result = image.astype(np.float32)
         
-        base = image.astype(np.float32)
-        hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
-        brightness = hsv[:, :, 2].astype(np.float32)
+        # Create flare color from HSV
+        rgb = colorsys.hsv_to_rgb(hue, sat, val)
+        flare_color = np.array([rgb[0] * 255, rgb[1] * 255, rgb[2] * 255], dtype=np.float32)
         
-        mask = np.clip((brightness - threshold) / max(1, 255 - threshold), 0, 1)
-        mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=5 + intensity * 5)
-        
-        if style == "Lens":
-            streak = cv2.blur(mask, (int(30 + intensity * 40), 1))
-            streak_v = cv2.blur(mask, (1, int(30 + intensity * 40)))
-            mask = np.clip(mask + 0.6 * streak + 0.6 * streak_v, 0, 1)
-        elif style == "Orbs":
-            mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=15 + intensity * 10)
-        elif style == "Starburst":
-            h, w = mask.shape
-            Y, X = np.ogrid[:h, :w]
-            cy, cx = h / 2, w / 2
-            dist = np.sqrt((X - cx) ** 2 + (Y - cy) ** 2)
-            radial = np.clip(1.0 - dist / dist.max(), 0, 1)
-            mask = np.clip(mask + radial * 0.5, 0, 1)
-        base_overlay = tint * (mask[:, :, None] * intensity * 0.9)
-        
-        # Build placement map for additional ghosts/elements.
-        if distribution == "Edge Trails":
+        # Detect bright spots (light sources)
+        if image.ndim == 3:
             gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-            edges = cv2.Canny(gray, 80, 180).astype(np.float32) / 255.0
-            placement = cv2.GaussianBlur(edges, (0, 0), sigmaX=2.0)
-        elif distribution == "Uniform":
-            placement = np.full_like(mask, 0.5)
         else:
-            placement = mask
-        placement = cv2.normalize(placement, None, 0.0, 1.0, cv2.NORM_MINMAX)
+            gray = image.copy()
         
-        coords = np.column_stack(np.where(placement > placement.mean() * 0.5))
-        if coords.size == 0:
-            coords = np.column_stack(np.where(np.ones_like(placement)))
-        flare_count = max(1, int(1 + flare_amount / 20))
-        h, w = placement.shape
-        overlay_mask = np.zeros((h, w), dtype=np.float32)
+        # Threshold to find bright areas
+        _, bright_mask = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
         
-        def draw_flare(canvas: NDArray[np.float32], center: Tuple[int, int], size: int, strength: float) -> None:
-            cx, cy = center
-            if cx < 0 or cy < 0 or cx >= w or cy >= h:
-                return
-            radius = max(4, size)
-            cv2.circle(canvas, (cx, cy), radius, strength, -1)
-            if shape == "Star":
-                for angle in range(0, 180, 45):
-                    dx = int(np.cos(np.deg2rad(angle)) * radius * 2)
-                    dy = int(np.sin(np.deg2rad(angle)) * radius * 2)
-                    cv2.line(canvas, (cx - dx, cy - dy), (cx + dx, cy + dy), strength * 0.7, thickness=max(1, radius // 6))
-            elif shape == "Hex":
-                angles = np.linspace(0, 2 * np.pi, 7)[:-1]
-                pts = np.stack(
-                    [
-                        [cx + radius * np.cos(a), cy + radius * np.sin(a)]
-                        for a in angles
-                    ]
-                ).astype(np.int32)
-                cv2.fillConvexPoly(canvas, pts, strength)
-            # Soft Orb just uses the gaussian circle above
+        # Find contours of bright areas
+        contours, _ = cv2.findContours(bright_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        for _ in range(flare_count):
-            idx = np.random.randint(0, len(coords))
-            cy, cx = coords[idx]
-            local_size = int(base_size * (0.8 + variation * (np.random.rand() - 0.5)))
-            local_strength = np.clip(intensity * (0.7 + np.random.rand() * 0.6), 0.1, 1.5)
-            draw_flare(overlay_mask, (cx, cy), local_size, local_strength)
+        # Get centers of bright spots
+        light_sources = []
+        for contour in contours:
+            M = cv2.moments(contour)
+            if M["m00"] > 0:
+                cx = int(M["m10"] / M["m00"])
+                cy = int(M["m01"] / M["m00"])
+                area = cv2.contourArea(contour)
+                brightness = gray[cy, cx] if 0 <= cy < h and 0 <= cx < w else 128
+                light_sources.append((cx, cy, area, brightness))
+        
+        # Sort by brightness and take top sources
+        light_sources.sort(key=lambda x: x[3], reverse=True)
+        light_sources = light_sources[:flare_amount]
+        
+        # Create flare overlay
+        flare_layer = np.zeros((h, w), dtype=np.float32)
+        
+        for cx, cy, area, brightness in light_sources:
+            source_intensity = (brightness / 255.0) * intensity
+            size = int(base_size * (1 + area / 1000))
             
-            ghost_steps = max(0, int(flare_amount / 25))
-            angle = np.random.rand() * 2 * np.pi
-            spacing_px = (base_size * 1.5) * (0.3 + flare_spacing)
-            for g in range(ghost_steps):
-                distance = spacing_px * (g + 1) * (0.8 + variation * (np.random.rand() - 0.5))
-                offset_x = int(cx + np.cos(angle) * distance)
-                offset_y = int(cy + np.sin(angle) * distance)
-                ghost_strength = local_strength * (0.7 ** (g + 1))
-                draw_flare(
-                    overlay_mask,
-                    (offset_x, offset_y),
-                    max(4, int(local_size * (0.85 ** (g + 1)))),
-                    ghost_strength,
-                )
+            # Draw star rays
+            if shape == "Star" or style == "Starburst":
+                num_rays = 6 if shape == "Star" else 8
+                for i in range(num_rays):
+                    angle = (i / num_rays) * np.pi + np.pi / 12  # Offset for aesthetics
+                    ray_length = size * 3
+                    
+                    # Draw ray with gradient
+                    for dist in range(1, int(ray_length)):
+                        falloff = 1.0 - (dist / ray_length)
+                        px = int(cx + np.cos(angle) * dist)
+                        py = int(cy + np.sin(angle) * dist)
+                        if 0 <= px < w and 0 <= py < h:
+                            flare_layer[py, px] += source_intensity * falloff * 0.8
+                        # Opposite direction
+                        px2 = int(cx - np.cos(angle) * dist)
+                        py2 = int(cy - np.sin(angle) * dist)
+                        if 0 <= px2 < w and 0 <= py2 < h:
+                            flare_layer[py2, px2] += source_intensity * falloff * 0.8
+            
+            # Draw central glow
+            glow_size = size * 2
+            Y, X = np.ogrid[max(0, cy-glow_size):min(h, cy+glow_size), 
+                           max(0, cx-glow_size):min(w, cx+glow_size)]
+            dist_sq = (X - cx)**2 + (Y - cy)**2
+            glow = np.exp(-dist_sq / (size**2 * 2)) * source_intensity
+            
+            y_start, y_end = max(0, cy-glow_size), min(h, cy+glow_size)
+            x_start, x_end = max(0, cx-glow_size), min(w, cx+glow_size)
+            flare_layer[y_start:y_end, x_start:x_end] += glow
+            
+            # Lens ghost reflections (circles on opposite side of image center)
+            if style == "Lens":
+                img_cx, img_cy = w // 2, h // 2
+                # Vector from center to light source
+                dx = cx - img_cx
+                dy = cy - img_cy
+                
+                # Create ghost reflections on opposite side
+                for ghost_i in range(3):
+                    ghost_dist = 0.3 + ghost_i * 0.4
+                    ghost_x = int(img_cx - dx * ghost_dist)
+                    ghost_y = int(img_cy - dy * ghost_dist)
+                    ghost_size = int(size * (0.5 - ghost_i * 0.1))
+                    ghost_intensity = source_intensity * (0.3 - ghost_i * 0.08)
+                    
+                    if 0 <= ghost_x < w and 0 <= ghost_y < h and ghost_size > 2:
+                        # Draw ghost circle
+                        Y2, X2 = np.ogrid[max(0, ghost_y-ghost_size):min(h, ghost_y+ghost_size),
+                                         max(0, ghost_x-ghost_size):min(w, ghost_x+ghost_size)]
+                        dist_sq2 = (X2 - ghost_x)**2 + (Y2 - ghost_y)**2
+                        # Ring shape for ghost
+                        ring = np.exp(-((np.sqrt(dist_sq2) - ghost_size*0.7)**2) / (ghost_size*0.3)**2)
+                        ring *= ghost_intensity
+                        
+                        y2_start, y2_end = max(0, ghost_y-ghost_size), min(h, ghost_y+ghost_size)
+                        x2_start, x2_end = max(0, ghost_x-ghost_size), min(w, ghost_x+ghost_size)
+                        flare_layer[y2_start:y2_end, x2_start:x2_end] += ring
+            
+            # Hex aperture ghosts
+            elif shape == "Hex":
+                for hex_i in range(6):
+                    angle = hex_i * np.pi / 3
+                    hx = int(cx + np.cos(angle) * size * 1.5)
+                    hy = int(cy + np.sin(angle) * size * 1.5)
+                    if 0 <= hx < w and 0 <= hy < h:
+                        cv2.circle(flare_layer, (hx, hy), size // 3, source_intensity * 0.3, -1)
         
-        overlay_mask = cv2.GaussianBlur(
-            overlay_mask,
-            (0, 0),
-            sigmaX=2.5 + intensity * 6,
-        )
-        overlay_mask = np.clip(overlay_mask, 0, 1)
-        color_overlay = overlay_mask[:, :, None] * tint * (0.7 + intensity)
-        result = np.clip(base + base_overlay + color_overlay, 0, 255).astype(np.uint8)
-        return result
+        # Blur the flare layer for softness
+        ksize = max(3, (base_size // 2) * 2 + 1)
+        flare_layer = cv2.GaussianBlur(flare_layer, (ksize, ksize), 0)
+        
+        # Apply flare with color
+        if result.ndim == 3:
+            for c in range(3):
+                result[:, :, c] += flare_layer * flare_color[c]
+        else:
+            result += flare_layer * 255
+        
+        return np.clip(result, 0, 255).astype(np.uint8)
     
     def _apply_glitch(self, image: NDArray, params: Dict) -> NDArray:
         """Apply stylized glitch effects with additional controls."""
@@ -707,6 +714,17 @@ class ProcessingPipeline:
         if glitch_intensity > 0:
             result = self._apply_glitch(result, params)
         
+        # Epsilon Glow (Dither Boy style)
+        if params.get("epsilon_glow_enabled", 0):
+            result = self._apply_epsilon_glow(result, params)
+        
+        # JPEG Glitch Effects
+        result = self._apply_jpeg_glitch(result, params)
+        
+        # Chromatic Aberration
+        if params.get("chromatic_enabled", 0):
+            result = self._apply_chromatic_aberration(result, params)
+        
         # Grain
         grain = params.get("grain", 0)
         if grain > 0:
@@ -728,5 +746,145 @@ class ProcessingPipeline:
                 vignette_mask = vignette_mask[:, :, np.newaxis]
             
             result = (result * vignette_mask).astype(np.uint8)
+        
+        return result
+
+    def _apply_epsilon_glow(self, image: NDArray, params: Dict) -> NDArray:
+        """Apply epsilon glow effect - bloom from bright areas."""
+        threshold = params.get("epsilon_threshold", 25) / 100.0 * 255
+        smoothing = max(1, int(params.get("epsilon_smoothing", 25)))
+        radius = max(1, int(params.get("epsilon_radius", 25)))
+        intensity = params.get("epsilon_intensity", 500) / 100.0
+        
+        result = image.astype(np.float32)
+        
+        # Extract luminance
+        if image.ndim == 3:
+            luminance = 0.299 * image[:,:,0] + 0.587 * image[:,:,1] + 0.114 * image[:,:,2]
+        else:
+            luminance = image.astype(np.float32)
+        
+        # Create bright mask - soft threshold
+        bright_mask = np.clip((luminance - threshold) / (255 - threshold + 1), 0, 1)
+        
+        # Extract bright pixels from original image
+        if image.ndim == 3:
+            bright_image = image.astype(np.float32) * bright_mask[:,:,np.newaxis]
+        else:
+            bright_image = image.astype(np.float32) * bright_mask
+        
+        # Multi-pass blur for soft glow
+        glow = bright_image.copy()
+        for i in range(3):
+            ksize = (radius * 2 + 1) * (i + 1)
+            if ksize % 2 == 0:
+                ksize += 1
+            ksize = min(ksize, 251)  # OpenCV limit
+            glow = cv2.GaussianBlur(glow, (ksize, ksize), 0)
+        
+        # Smooth the glow further
+        if smoothing > 1:
+            smooth_k = smoothing * 2 + 1
+            if smooth_k % 2 == 0:
+                smooth_k += 1
+            smooth_k = min(smooth_k, 251)
+            glow = cv2.GaussianBlur(glow, (smooth_k, smooth_k), 0)
+        
+        # Add glow to original with intensity
+        result = result + glow * intensity
+        
+        return np.clip(result, 0, 255).astype(np.uint8)
+
+    def _apply_jpeg_glitch(self, image: NDArray, params: Dict) -> NDArray:
+        """Apply JPEG-style glitch effects."""
+        result = image.copy()
+        h, w = image.shape[:2]
+        
+        # Block shift - shift horizontal bands randomly
+        block_shift = int(params.get("block_shift", 0))
+        if block_shift > 0:
+            block_size = 8
+            rng = np.random.RandomState(42)
+            for y in range(0, h, block_size):
+                if rng.rand() < 0.4:  # 40% chance
+                    shift = rng.randint(-block_shift * 3, block_shift * 3 + 1)
+                    end_y = min(y + block_size, h)
+                    result[y:end_y] = np.roll(result[y:end_y], shift, axis=1)
+        
+        # Channel swap - swap RGB channels in random regions
+        channel_swap = int(params.get("channel_swap", 0))
+        if channel_swap > 0 and result.ndim == 3:
+            rng = np.random.RandomState(43)
+            num_regions = channel_swap // 5 + 1
+            for _ in range(num_regions):
+                y1 = rng.randint(0, max(1, h - 20))
+                x1 = rng.randint(0, max(1, w - 40))
+                rh = rng.randint(10, min(50, h - y1))
+                rw = rng.randint(20, min(100, w - x1))
+                # Rotate channels
+                temp = result[y1:y1+rh, x1:x1+rw].copy()
+                result[y1:y1+rh, x1:x1+rw, 0] = temp[:, :, 1]
+                result[y1:y1+rh, x1:x1+rw, 1] = temp[:, :, 2]
+                result[y1:y1+rh, x1:x1+rw, 2] = temp[:, :, 0]
+        
+        # Scanline offset - create CRT-like scanline displacement
+        scanline_offset = int(params.get("scanline_offset", 0))
+        if scanline_offset > 0:
+            for y in range(0, h, 2):
+                shift = int(np.sin(y * 0.1) * scanline_offset * 0.5)
+                result[y] = np.roll(result[y], shift, axis=0)
+        
+        # Block scramble - swap random 8x8 blocks (JPEG-like)
+        block_scramble = int(params.get("block_scramble", 0))
+        if block_scramble > 0 and h > 16 and w > 16:
+            block_size = 8
+            rng = np.random.RandomState(44)
+            num_swaps = block_scramble
+            for _ in range(num_swaps):
+                y1 = rng.randint(0, (h - block_size) // block_size) * block_size
+                x1 = rng.randint(0, (w - block_size) // block_size) * block_size
+                y2 = rng.randint(0, (h - block_size) // block_size) * block_size
+                x2 = rng.randint(0, (w - block_size) // block_size) * block_size
+                
+                block1 = result[y1:y1+block_size, x1:x1+block_size].copy()
+                block2 = result[y2:y2+block_size, x2:x2+block_size].copy()
+                result[y1:y1+block_size, x1:x1+block_size] = block2
+                result[y2:y2+block_size, x2:x2+block_size] = block1
+        
+        # Interlace corruption - darken alternating lines + random shifts
+        interlace = int(params.get("interlace_corruption", 0))
+        if interlace > 0:
+            # Darken odd lines
+            darken = 1.0 - (interlace / 200.0)
+            result[1::2] = (result[1::2].astype(np.float32) * darken).astype(np.uint8)
+            
+            # Random line corruption
+            rng = np.random.RandomState(45)
+            num_corrupt = interlace // 10 + 1
+            for _ in range(num_corrupt):
+                y = rng.randint(0, h)
+                shift = rng.randint(-interlace, interlace + 1)
+                result[y] = np.roll(result[y], shift, axis=0)
+        
+        return result
+
+    def _apply_chromatic_aberration(self, image: NDArray, params: Dict) -> NDArray:
+        """Apply chromatic aberration (RGB channel displacement)."""
+        if image.ndim != 3:
+            return image
+        
+        max_displace = int(params.get("chromatic_max_displace", 20))
+        red_offset = int((params.get("chromatic_red", 50) - 50) / 50.0 * max_displace)
+        green_offset = int((params.get("chromatic_green", 50) - 50) / 50.0 * max_displace)
+        blue_offset = int((params.get("chromatic_blue", 50) - 50) / 50.0 * max_displace)
+        
+        result = image.copy()
+        
+        if red_offset != 0:
+            result[:, :, 0] = np.roll(image[:, :, 0], red_offset, axis=1)
+        if green_offset != 0:
+            result[:, :, 1] = np.roll(image[:, :, 1], green_offset, axis=1)
+        if blue_offset != 0:
+            result[:, :, 2] = np.roll(image[:, :, 2], blue_offset, axis=1)
         
         return result

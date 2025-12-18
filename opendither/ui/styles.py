@@ -1,5 +1,8 @@
 """Ultra-modern minimal dark theme for OpenDither."""
 
+# Import Dither Boy theme
+from .styles_new import DITHER_BOY_THEME
+
 DARK_THEME = """
 /* ============ GLOBAL - Zinc Dark Theme ============ */
 * {
